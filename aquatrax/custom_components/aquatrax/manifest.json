@@ -1,0 +1,1 @@
+{"codeowners":[],"config_flow":true,"documentation":"https://myaquatrax.com","domain":"aquatrax","iot_class":"cloud_polling","loggers":["custom_components.aquatrax"],"name":"AquaTrax","requirements":[],"version":"0.1.0"}
