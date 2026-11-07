@@ -28,25 +28,11 @@ FORM_TOKEN = "__RequestVerificationToken"
 # Water District is confirmed as id 1. The order below is the order the
 # portal lists them in.
 FALLBACK_UTILITIES = [
-    "East Orange County Water District",
+    "City of San Jose",
     "City of Fountain Valley",
-    "City of American Canyon",
-    "City of Newport Beach",
-    "City of Lindon",
-    "City of Buena Park",
-    "Crestline Village Water District",
-    "Laguna Beach County Water District",
-    "City of Cedar Hills",
-    "Myoma Dunes Water Company",
-    "Marshall & Polk Rural Water System",
     "City of Morgan Hill",
     "City of Gilroy",
-    "City of Goodyear",
-    "City of La Marque",
-    "City of White Plains",
-    "City of San Jose",
-    "Rowland Water District",
-    "Fairview City",
+
 ]
 
 # Units the portal reports usage in (per AquaTrax flyers: CCF or gallons).
