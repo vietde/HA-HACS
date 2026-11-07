@@ -34,31 +34,15 @@ FORM_TOKEN = "__RequestVerificationToken"
 
 # Fallback utility list (name -> numeric id). The integration fetches the
 # live list from UTILITY_LIST_PATH at setup time; this map is the fallback
-# when that fetch fails. IDs verified live 2026-11-07 via
-# /common/GetMasterUtilityList — they are NOT sequential and NOT the list
-# order (City of San Jose is 28, not 17 as earlier guessed; Crestline
-# Village Water District is 17). The order below is the order the portal
-# lists them in.
+# when that fetch fails, and the setup form only offers utilities in this
+# map. IDs verified live 2026-11-07 via /common/GetMasterUtilityList —
+# they are NOT sequential (City of San Jose is 28, not 17 as earlier
+# guessed). Ngot asked 2026-11-07 for just these three in the list:
+# City of Gilroy, City of San Jose, City of Fountain Valley.
 KNOWN_UTILITY_IDS = {
-    "East Orange County Water District": "1",
-    "City of Fountain Valley": "2",
-    "City of American Canyon": "9",
-    "City of Newport Beach": "10",
-    "City of Lindon": "12",
-    "City of Buena Park": "16",
-    "Crestline Village Water District": "17",
-    "Laguna Beach County Water District": "18",
-    "City of Cedar Hills": "19",
-    "Myoma Dunes Water Company": "20",
-    "Marshall & Polk Rural Water System": "21",
-    "City of Morgan Hill": "22",
     "City of Gilroy": "23",
-    "City of Goodyear": "24",
-    "City of La Marque": "26",
-    "City of White Plains": "27",
     "City of San Jose": "28",
-    "Rowland Water District": "29",
-    "Fairview City": "30",
+    "City of Fountain Valley": "2",
 }
 FALLBACK_UTILITIES = list(KNOWN_UTILITY_IDS)
 

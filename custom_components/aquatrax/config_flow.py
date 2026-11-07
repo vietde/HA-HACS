@@ -45,14 +45,26 @@ class AquaTraxConfigFlow(ConfigFlow, domain=DOMAIN):
         self._utilities: dict[str, str] = {}
 
     async def _fetch_utilities(self) -> list[str]:
-        """Load the utility list from the portal's login page."""
+        """Load the utility list from the portal's login page.
+
+        Only the utilities in KNOWN_UTILITY_IDS are offered (Ngot's choice,
+        2026-11-07: Gilroy, San Jose, Fountain Valley) — the live list is
+        filtered to those names so the dropdown stays short.
+        """
         try:
             client = AquaTraxClient(async_get_clientsession(self.hass))
             self._utilities = await client.fetch_utilities()
         except AquaTraxConnectionError:
             self._utilities = {}
         if self._utilities:
-            return sorted(self._utilities)
+            known = {
+                name: uid
+                for name, uid in self._utilities.items()
+                if name in KNOWN_UTILITY_IDS
+            }
+            if known:
+                self._utilities = known
+                return sorted(self._utilities)
         return FALLBACK_UTILITIES
 
     async def async_step_user(

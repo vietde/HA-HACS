@@ -222,13 +222,49 @@ class AquaTraxClient:
                     return {text: value for value, text in options if value}
         return {}
 
+    async def _already_signed_in(self) -> bool:
+        """Check whether the shared session is already authenticated.
+
+        GETs the portal home page: an authenticated session lands on the
+        dashboard (or a page with account links), an anonymous one is sent
+        back to /Account/Login.
+        """
+        try:
+            async with self._session.get(BASE_URL + "/") as resp:
+                if "/account/login" in str(resp.url).lower():
+                    return False
+                text = await resp.text()
+        except Exception:  # noqa: BLE001 - not signed in (or unreachable)
+            return False
+        lowered = text.lower()
+        return any(
+            marker in lowered
+            for marker in ("sign out", "log out", "logout", "my account", "dashboard")
+        )
+
     async def login(self, utility_id: str, email: str, password: str) -> bool:
-        """Sign in with the portal form. Returns True on success."""
+        """Sign in with the portal form. Returns True on success.
+
+        The sign-in is idempotent: Home Assistant's shared session may
+        already be authenticated (the config flow just signed in on the same
+        session), in which case the portal redirects an authenticated GET of
+        /Account/Login to the dashboard — a page with no sign-in form. That
+        is a successful sign-in, not an error (the old code raised "No
+        sign-in form found" here and setup retried forever — seen 2026-11-07).
+        """
         try:
             async with self._session.get(BASE_URL + LOGIN_PATH) as resp:
                 html = await resp.text()
+                final_url = str(resp.url)
         except Exception as err:
             raise AquaTraxConnectionError(f"Could not load login page: {err}") from err
+
+        # Already signed in: the portal sent us somewhere other than the
+        # login page (typically the dashboard).
+        if "/account/login" not in final_url.lower():
+            self._logged_in = True
+            self._dashboard_url = final_url
+            return True
 
         parser = _parse_forms(html)
         login_form = None
@@ -237,10 +273,18 @@ class AquaTraxClient:
             if action.rstrip("/").endswith("/account/login") or FORM_EMAIL in form.get("inputs", {}):
                 login_form = form
                 break
-        if login_form is None and parser.forms:
-            login_form = parser.forms[0]
         if login_form is None:
-            raise AquaTraxConnectionError("No sign-in form found on the login page")
+            # No sign-in form on the login page. The session may already be
+            # authenticated with the dashboard served without a redirect;
+            # probe the home page before giving up.
+            if await self._already_signed_in():
+                self._logged_in = True
+                self._dashboard_url = BASE_URL + "/"
+                return True
+            if parser.forms:
+                login_form = parser.forms[0]
+            else:
+                raise AquaTraxConnectionError("No sign-in form found on the login page")
 
         # Preserve the form's own hidden fields verbatim (anti-forgery
         # token, Mfe, IsRegistration, IsSSOEnabled, InvoiceCoudstatus).
