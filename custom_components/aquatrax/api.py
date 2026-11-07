@@ -218,28 +218,36 @@ class AquaTraxClient:
 
         data: dict[str, str] = {}
         inputs = login_form.get("inputs", {})
-        if FORM_TOKEN in inputs:
-            data[FORM_TOKEN] = inputs[FORM_TOKEN]["value"]
-        # Preserve any other hidden fields (e.g. return URL).
+
+        # 1. Safely capture ALL hidden fields (CRITICAL for ASP.NET __RequestVerificationToken)
         for name, field in inputs.items():
-            if field["type"] == "hidden" and name not in data:
+            if field["type"] == "hidden":
                 data[name] = field["value"]
-            data[FORM_TOKEN] = inputs[FORM_TOKEN]["value"]
-            data["Mfe"] = "false"
-            data["IsRegistration"] = "true"
-            data["IsSSOEnabled"] = "1"
-            data["InvoiceCoudstatus"] = "0"
-            data["utilityId"] = utility_id
-            data["UserName"] = email
-            data["Password"] = password
-            data["RememberMe"] = "true"
+
+        # 2. Add the exact payload fields expected by the server
+        data["Mfe"] = "false"
+        data["IsRegistration"] = "true"
+        data["IsSSOEnabled"] = "1"
+        data["InvoiceCoudstatus"] = "0"
+        data["utilityId"] = utility_id
+        data["UserName"] = email
+        data["Password"] = password
+        data["RememberMe"] = "true"
+
+        # 3. Add standard browser headers to bypass basic bot-blocking
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+            "Origin": "https://myaquatrax.com",
+            "Referer": "https://myaquatrax.com/Account/Login",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
 
         action = login_form.get("action") or LOGIN_PATH
         post_url = action if action.startswith("http") else BASE_URL + action
+
         try:
-            async with self._session.post(
-                post_url, data=data, allow_redirects=True
-            ) as resp:
+            # 4. Inject the headers into the POST request
+            async with self._session.post(post_url, data=data, headers=headers, allow_redirects=True) as resp:
                 body = await resp.text()
                 final_url = str(resp.url)
         except Exception as err:
