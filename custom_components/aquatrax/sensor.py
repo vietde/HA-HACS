@@ -12,7 +12,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_entity import RestoreEntity
+# RestoreEntity lives in restore_state; the old restore_entity module was
+# removed in HA 2026.x (importing it raises ModuleNotFoundError and breaks
+# setup with "Error setting up entry" — seen 2026-11-07).
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
