@@ -18,6 +18,15 @@ LOGIN_PATH = "/Account/Login"
 # [{"UtilityId": 28, "Name": "City of San Jose", ...}]}}.
 UTILITY_LIST_PATH = "/common/GetMasterUtilityList"
 
+# The dashboard page is a JavaScript app: its numbers are NOT in the page
+# HTML. They come from these JSON endpoints (found 2026-11-07 in the
+# portal's own public JS bundles /bundles/dashboardcustomjs and
+# /bundles/usagejs). All three need only the session cookie; only
+# GetWaterUsage takes parameters (a JSON "request" query value).
+DASHBOARD_DETAILS_PATH = "/DashboardCustom/GetDashboardDetails"
+HEADER_USAGE_PATH = "/Usage/GetHeaderUsage"
+WATER_USAGE_PATH = "/Usage/GetWaterUsage"
+
 # Login form field names — exact names read from the live login page HTML
 # (curl, 2026-11-07). The form (#loginFormID) POSTs to /Account/Login and
 # carries hidden fields Mfe ("False"), __RequestVerificationToken,

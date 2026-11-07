@@ -112,8 +112,13 @@ class AquaTraxSensor(CoordinatorEntity[AquaTraxCoordinator], SensorEntity, Resto
     def extra_state_attributes(self) -> dict:
         """Return portal details as attributes."""
         data = self.coordinator.data or {}
-        return {
+        attrs: dict = {
             "utility": self.coordinator.utility_name,
             "portal_unit": data.get("unit"),
             "dashboard_url": data.get("dashboard_url"),
         }
+        if data.get("usage_date"):
+            attrs["usage_date"] = data["usage_date"]
+        if data.get("billing_period"):
+            attrs["billing_period"] = data["billing_period"]
+        return attrs

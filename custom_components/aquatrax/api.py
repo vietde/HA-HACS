@@ -2,13 +2,18 @@
 
 The portal is a server-rendered ASP.NET MVC site with no public REST API,
 so this client reproduces what a browser does: fetch the login page, pick
-the water utility from its dropdown, and POST the sign-in form, then read
-the usage figures off the dashboard page.
+the water utility from its dropdown, and POST the sign-in form. Usage
+figures do NOT come from the dashboard page HTML (it is a JavaScript app)
+— they come from the portal's own JSON endpoints, found in its public JS
+bundles: /DashboardCustom/GetDashboardDetails (period + latest-day usage),
+/Usage/GetHeaderUsage (usage so far this period), /Usage/GetWaterUsage
+(daily series, for today / this week / this month). All values are in the
+utility's billing unit (CCF for San Jose) and are converted to gallons.
 
-Nothing here is tested against a real account yet (no account exists at
-build time). Parsing is deliberately defensive: unknown page shapes yield
-``None`` figures instead of exceptions, and the raw dashboard text is kept
-at DEBUG level so the selectors can be tuned after the first real login.
+Nothing here is tested against a real account yet (no account existed at
+build time); the v0.1.4 endpoint mapping is derived from the portal's own
+JS (which fields the dashboard reads). Parsing stays defensive: unknown
+shapes yield ``None`` figures instead of exceptions.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date, timedelta
 from html.parser import HTMLParser
 from typing import Any
 
@@ -24,13 +30,16 @@ from aiohttp import ClientSession
 from .const import (
     BASE_URL,
     CCF_TO_GAL,
+    DASHBOARD_DETAILS_PATH,
     FORM_EMAIL,
     FORM_PASSWORD,
     FORM_REMEMBER_ME,
     FORM_TOKEN,
     FORM_UTILITY,
+    HEADER_USAGE_PATH,
     LOGIN_PATH,
     UTILITY_LIST_PATH,
+    WATER_USAGE_PATH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -170,6 +179,57 @@ def parse_usage_text(text: str) -> dict[str, float | str | None]:
                     found["unit"] = unit
                 break
     return found
+
+
+def _portal_json(text: str) -> dict:
+    """Decode a portal JSON response (plain or double-encoded)."""
+    data: Any = json.loads(text)
+    if isinstance(data, str):
+        data = json.loads(data)
+    return data if isinstance(data, dict) else {}
+
+
+def _num(value: Any) -> float | None:
+    """Coerce a portal value to float, or None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", "").strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _gal_factor(unit_text: str | None) -> float:
+    """Gallons per portal unit, from the unit label the portal reports."""
+    text = (unit_text or "").lower()
+    if "ccf" in text or "hcf" in text:
+        return CCF_TO_GAL
+    if "m3" in text or "m³" in text or "cubic meter" in text:
+        return 264.172
+    if "ft3" in text or "ft³" in text or "cubic foot" in text or "cubic feet" in text:
+        return 7.48052
+    if "liter" in text or text.strip() in ("l",):
+        return 0.264172
+    return 1.0  # gallons already
+
+
+def _parse_portal_date(value: Any) -> date | None:
+    """Parse a portal date (MM/DD/YYYY, YYYY-MM-DD, or 'Nov 7, 2026')."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y"):
+        try:
+            from datetime import datetime
+
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 class AquaTraxClient:
@@ -332,19 +392,158 @@ class AquaTraxClient:
         return True
 
     async def fetch_usage(self) -> dict[str, float | str | None]:
-        """Fetch the dashboard and extract usage figures (gallons)."""
-        url = getattr(self, "_dashboard_url", BASE_URL + "/")
+        """Fetch usage figures (gallons) from the portal's JSON endpoints.
+
+        The dashboard page itself carries no numbers (JavaScript app), so
+        this calls the same endpoints the dashboard's own JavaScript calls:
+        GetDashboardDetails (period usage, latest-day usage, unit label),
+        GetHeaderUsage (usage so far this period), and GetWaterUsage with a
+        daily series for the current month (today / this week / this month).
+        Values are in the utility's billing unit (CCF for San Jose) and are
+        converted to gallons. Falls back to scraping the dashboard page
+        text if the endpoints return nothing usable.
+        """
+        result: dict[str, float | str | None] = {
+            "today_gal": None,
+            "week_gal": None,
+            "month_gal": None,
+            "period_gal": None,
+            "meter_read_gal": None,
+            "unit": None,
+            "usage_date": None,
+            "billing_period": None,
+        }
+        result["dashboard_url"] = getattr(
+            self, "_dashboard_url", BASE_URL + DASHBOARD_DETAILS_PATH
+        )
         try:
-            async with self._session.get(url) as resp:
-                html = await resp.text()
-        except Exception as err:
-            raise AquaTraxConnectionError(f"Could not load dashboard: {err}") from err
+            await self._fetch_dashboard_details(result)
+            await self._fetch_header_usage(result)
+            await self._fetch_daily_series(result)
+        except Exception as err:  # noqa: BLE001 - fall back to HTML scraping
+            _LOGGER.debug("AquaTrax JSON endpoints failed (%s); trying HTML", err)
+        if result["today_gal"] is None and result["period_gal"] is None:
+            try:
+                html_result = await self._fetch_usage_html()
+                for key in ("today_gal", "week_gal", "month_gal", "period_gal", "meter_read_gal"):
+                    if result[key] is None and html_result.get(key) is not None:
+                        result[key] = html_result[key]
+                if result["unit"] is None:
+                    result["unit"] = html_result.get("unit")
+            except Exception as err:  # noqa: BLE001 - unknown figures, not fatal
+                _LOGGER.debug("AquaTrax HTML fallback failed (%s)", err)
+        _LOGGER.debug("AquaTrax usage: %s", result)
+        return result
+
+    async def _fetch_dashboard_details(
+        self, result: dict[str, float | str | None]
+    ) -> None:
+        """Fill period + latest-day usage from GetDashboardDetails."""
+        async with self._session.get(BASE_URL + DASHBOARD_DETAILS_PATH) as resp:
+            data = _portal_json(await resp.text())
+        results = data.get("Results") or {}
+        tables = results.get("Table") or []
+        table2 = (results.get("Table2") or [{}])[0]
+        table3 = (results.get("Table3") or [{}])[0]
+        table9 = results.get("Table9") or []
+        unit_text = table9[0].get("Text") if table9 else None
+        factor = _gal_factor(unit_text)
+        if unit_text:
+            result["unit"] = unit_text
+        if tables:
+            period = tables[0].get("BillingPeriod")
+            if period:
+                result["billing_period"] = str(period)
+        # Current billing-period usage ("Current Usage" on the dashboard).
+        period_value = _num(table2.get("Usagevalue"))
+        if period_value is not None:
+            result["period_gal"] = period_value * factor
+        # Latest day's usage (the daily gauge: Usagevalue on UsageDate).
+        today_value = _num(table3.get("Usagevalue"))
+        usage_date = _parse_portal_date(table3.get("UsageDate"))
+        if today_value is not None:
+            result["today_gal"] = today_value * factor
+        if usage_date is not None:
+            result["usage_date"] = usage_date.isoformat()
+
+    async def _fetch_header_usage(
+        self, result: dict[str, float | str | None]
+    ) -> None:
+        """Fill period usage from GetHeaderUsage ('so far' this period)."""
+        async with self._session.get(BASE_URL + HEADER_USAGE_PATH) as resp:
+            data = _portal_json(await resp.text())
+        rows = ((data.get("Results") or {}).get("Table") or [])
+        if not rows:
+            return
+        # WaterUnitUsageSoFar is in the utility's billing unit (CCF here);
+        # the portal's own gallon rendering reuses the same number, so
+        # always convert from the unit label, never trust a gallon field.
+        factor = _gal_factor(result.get("unit") if isinstance(result.get("unit"), str) else None)
+        so_far = _num(rows[0].get("WaterUnitUsageSoFar"))
+        if so_far is not None:
+            result["period_gal"] = so_far * factor
+
+    async def _fetch_daily_series(
+        self, result: dict[str, float | str | None]
+    ) -> None:
+        """Sum the daily series from GetWaterUsage for today/week/month.
+
+        Mode "D" rows carry DateOfReading + TotalValue (usage that day, in
+        the billing unit). Requested for the current calendar month.
+        """
+        today = date.today()
+        month_start = today.replace(day=1)
+        week_start = today - timedelta(days=today.weekday())
+        request = {
+            "Mode": "D",
+            "Type": "W",
+            "Year": None,
+            "HourlyType": "H",
+            "FilterDate": today.strftime("%m/%d/%Y"),
+            "FromDate": month_start.strftime("%m/%d/%Y"),
+            "MeterNumber": None,
+        }
+        async with self._session.get(
+            BASE_URL + WATER_USAGE_PATH, params={"request": json.dumps(request)}
+        ) as resp:
+            data = _portal_json(await resp.text())
+        rows = ((data.get("Results") or {}).get("Table") or [])
+        if not rows:
+            return
+        factor = _gal_factor(result.get("unit") if isinstance(result.get("unit"), str) else None)
+        week_total = 0.0
+        month_total = 0.0
+        saw_week = False
+        saw_month = False
+        for row in rows:
+            day = _parse_portal_date(row.get("DateOfReading"))
+            value = _num(row.get("TotalValue"))
+            if day is None or value is None:
+                continue
+            value_gal = value * factor
+            if day == today:
+                result["today_gal"] = value_gal
+                result["usage_date"] = day.isoformat()
+            if week_start <= day <= today:
+                week_total += value_gal
+                saw_week = True
+            if month_start <= day <= today:
+                month_total += value_gal
+                saw_month = True
+        if saw_week:
+            result["week_gal"] = week_total
+        if saw_month:
+            result["month_gal"] = month_total
+
+    async def _fetch_usage_html(self) -> dict[str, float | str | None]:
+        """Legacy fallback: scrape numbers off the dashboard page text."""
+        url = getattr(self, "_dashboard_url", BASE_URL + "/")
+        async with self._session.get(url) as resp:
+            html = await resp.text()
         parser = _parse_forms(html)
         text = " ".join(parser.text_chunks)
         _LOGGER.debug("AquaTrax dashboard text (first 2000 chars): %s", text[:2000])
-        result = parse_usage_text(text)
-        result["dashboard_url"] = url
-        return result
+        return parse_usage_text(text)
 
     @property
     def logged_in(self) -> bool:
