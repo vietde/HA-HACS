@@ -282,6 +282,29 @@ class AquaTraxClient:
                     return {text: value for value, text in options if value}
         return {}
 
+    async def _session_is_authenticated(self) -> bool:
+        """Check whether the shared session is already signed in.
+
+        Probes the dashboard JSON endpoint: an authenticated session gets
+        a JSON object with a "Results" key; an anonymous one is redirected
+        to the login page (HTML, not JSON). This is the reliable check —
+        the dashboard/login pages are JavaScript shells whose raw HTML has
+        no sign-in form and no "Sign Out" text, so HTML markers cannot
+        tell the two states apart (seen 2026-11-07: an authenticated GET
+        of /Account/Login returned a form-less page and the old code
+        wrongly raised "No sign-in form found").
+        """
+        try:
+            async with self._session.get(
+                BASE_URL + DASHBOARD_DETAILS_PATH
+            ) as resp:
+                if "/account/login" in str(resp.url).lower():
+                    return False
+                data = _portal_json(await resp.text())
+        except Exception:  # noqa: BLE001 - not signed in (or unreachable)
+            return False
+        return "Results" in data
+
     async def _already_signed_in(self) -> bool:
         """Check whether the shared session is already authenticated.
 
@@ -307,17 +330,29 @@ class AquaTraxClient:
 
         The sign-in is idempotent: Home Assistant's shared session may
         already be authenticated (the config flow just signed in on the same
-        session), in which case the portal redirects an authenticated GET of
-        /Account/Login to the dashboard — a page with no sign-in form. That
-        is a successful sign-in, not an error (the old code raised "No
+        session), in which case the portal serves the dashboard (a
+        JavaScript shell with no sign-in form) instead of the login page.
+        That is a successful sign-in, not an error (the old code raised "No
         sign-in form found" here and setup retried forever — seen 2026-11-07).
         """
+        # Fast path: already authenticated on this session?
+        if await self._session_is_authenticated():
+            self._logged_in = True
+            self._dashboard_url = BASE_URL + DASHBOARD_DETAILS_PATH
+            return True
         try:
             async with self._session.get(BASE_URL + LOGIN_PATH) as resp:
                 html = await resp.text()
                 final_url = str(resp.url)
         except Exception as err:
             raise AquaTraxConnectionError(f"Could not load login page: {err}") from err
+
+        _LOGGER.debug(
+            "AquaTrax login page: url=%s forms=%d first_bytes=%r",
+            final_url,
+            len(_parse_forms(html).forms),
+            html[:200],
+        )
 
         # Already signed in: the portal sent us somewhere other than the
         # login page (typically the dashboard).
