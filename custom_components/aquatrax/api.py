@@ -224,10 +224,15 @@ class AquaTraxClient:
         for name, field in inputs.items():
             if field["type"] == "hidden" and name not in data:
                 data[name] = field["value"]
-        data[FORM_UTILITY] = utility_id
-        data[FORM_EMAIL] = email
-        data[FORM_PASSWORD] = password
-        data[FORM_REMEMBER_ME] = "true"
+            data[FORM_TOKEN] = inputs[FORM_TOKEN]["value"]
+            data["Mfe"] = "false"
+            data["IsRegistration"] = "true"
+            data["IsSSOEnabled"] = "1"
+            data["InvoiceCoudstatus"] = "0"
+            data["utilityId"] = utility_id
+            data["UserName"] = email
+            data["Password"] = password
+            data["RememberMe"] = "true"
 
         action = login_form.get("action") or LOGIN_PATH
         post_url = action if action.startswith("http") else BASE_URL + action

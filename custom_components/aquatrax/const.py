@@ -16,8 +16,8 @@ LOGIN_PATH = "/Account/Login"
 # Login form field names. These are the standard ASP.NET MVC names for this
 # portal; they will be confirmed against the live login page at first setup
 # and corrected here if the portal uses different names.
-FORM_UTILITY = "UtilityId"
-FORM_EMAIL = "Email"
+FORM_UTILITY = "utilityId"
+FORM_EMAIL = "Username"
 FORM_PASSWORD = "Password"
 FORM_REMEMBER_ME = "RememberMe"
 FORM_TOKEN = "__RequestVerificationToken"
