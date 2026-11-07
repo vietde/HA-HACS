@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL_HOURS,
     DOMAIN,
     FALLBACK_UTILITIES,
+    KNOWN_UTILITY_IDS,
 )
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -62,10 +63,12 @@ class AquaTraxConfigFlow(ConfigFlow, domain=DOMAIN):
         utilities = await self._fetch_utilities()
         if user_input is not None:
             utility_name = user_input[CONF_UTILITY]
-            utility_id = self._utilities.get(utility_name)
+            utility_id = self._utilities.get(utility_name) or KNOWN_UTILITY_IDS.get(
+                utility_name
+            )
             if utility_id is None:
-                # Fallback list has no ids; the portal login will resolve it
-                # from the live dropdown at setup time.
+                # Fallback list has no id for this utility; the portal login
+                # will resolve it from the live dropdown at setup time.
                 utility_id = ""
             await self.async_set_unique_id(f"{utility_name}:{user_input[CONF_EMAIL]}")
             self._abort_if_unique_id_configured()

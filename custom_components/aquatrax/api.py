@@ -13,6 +13,7 @@ at DEBUG level so the selectors can be tuned after the first real login.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from html.parser import HTMLParser
@@ -29,6 +30,7 @@ from .const import (
     FORM_TOKEN,
     FORM_UTILITY,
     LOGIN_PATH,
+    UTILITY_LIST_PATH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -178,7 +180,31 @@ class AquaTraxClient:
         self._logged_in = False
 
     async def fetch_utilities(self) -> dict[str, str]:
-        """Return {utility display name: numeric id} from the login page."""
+        """Return {utility display name: numeric id}.
+
+        The dropdown on the login page is empty in the raw HTML — JavaScript
+        fills it from /common/GetMasterUtilityList, so that endpoint is the
+        source of truth. Its response is double-encoded JSON:
+        {"Results": {"Table": [{"UtilityId": 28, "Name": "City of San
+        Jose", ...}]}}. Falls back to parsing <option> elements from the
+        login page HTML if the endpoint changes shape.
+        """
+        try:
+            async with self._session.get(BASE_URL + UTILITY_LIST_PATH) as resp:
+                raw = await resp.text()
+            data: Any = json.loads(raw)
+            if isinstance(data, str):
+                data = json.loads(data)
+            rows = data["Results"]["Table"]
+            found = {
+                str(row["Name"]): str(row["UtilityId"])
+                for row in rows
+                if row.get("Name") and row.get("UtilityId") is not None
+            }
+            if found:
+                return found
+        except Exception as err:  # noqa: BLE001 - fall through to HTML parsing
+            _LOGGER.debug("Utility-list endpoint failed (%s); trying HTML", err)
         try:
             async with self._session.get(BASE_URL + LOGIN_PATH) as resp:
                 html = await resp.text()
@@ -201,14 +227,14 @@ class AquaTraxClient:
         try:
             async with self._session.get(BASE_URL + LOGIN_PATH) as resp:
                 html = await resp.text()
-                login_url = str(resp.url)
         except Exception as err:
             raise AquaTraxConnectionError(f"Could not load login page: {err}") from err
 
         parser = _parse_forms(html)
         login_form = None
         for form in parser.forms:
-            if "login" in (form.get("action") or "").lower() or FORM_EMAIL in form.get("inputs", {}):
+            action = (form.get("action") or "").lower()
+            if action.rstrip("/").endswith("/account/login") or FORM_EMAIL in form.get("inputs", {}):
                 login_form = form
                 break
         if login_form is None and parser.forms:
@@ -216,38 +242,34 @@ class AquaTraxClient:
         if login_form is None:
             raise AquaTraxConnectionError("No sign-in form found on the login page")
 
+        # Preserve the form's own hidden fields verbatim (anti-forgery
+        # token, Mfe, IsRegistration, IsSSOEnabled, InvoiceCoudstatus).
+        # The server validates them; hardcoding them broke sign-in before
+        # (IsRegistration must stay "False" on a login post).
         data: dict[str, str] = {}
         inputs = login_form.get("inputs", {})
-
-        # 1. Safely capture ALL hidden fields (CRITICAL for ASP.NET __RequestVerificationToken)
         for name, field in inputs.items():
-            if field["type"] == "hidden":
+            if field["type"] == "hidden" and name not in data:
                 data[name] = field["value"]
-
-        # 2. Add the exact payload fields expected by the server
-        data["Mfe"] = "false"
-        data["IsRegistration"] = "true"
-        data["IsSSOEnabled"] = "1"
-        data["InvoiceCoudstatus"] = "0"
-        data["utilityId"] = utility_id
-        data["UserName"] = email
-        data["Password"] = password
-        data["RememberMe"] = "true"
-
-        # 3. Add standard browser headers to bypass basic bot-blocking
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-            "Origin": "https://myaquatrax.com",
-            "Referer": "https://myaquatrax.com/Account/Login",
-            "Content-Type": "application/x-www-form-urlencoded"
-        }
+        if FORM_TOKEN in inputs:
+            data[FORM_TOKEN] = inputs[FORM_TOKEN]["value"]
+        # Only these four are ours to set.
+        data[FORM_UTILITY] = utility_id
+        data[FORM_EMAIL] = email
+        data[FORM_PASSWORD] = password
+        data[FORM_REMEMBER_ME] = "true"
 
         action = login_form.get("action") or LOGIN_PATH
         post_url = action if action.startswith("http") else BASE_URL + action
-
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Origin": BASE_URL,
+            "Referer": BASE_URL + LOGIN_PATH,
+        }
         try:
-            # 4. Inject the headers into the POST request
-            async with self._session.post(post_url, data=data, headers=headers, allow_redirects=True) as resp:
+            async with self._session.post(
+                post_url, data=data, headers=headers, allow_redirects=True
+            ) as resp:
                 body = await resp.text()
                 final_url = str(resp.url)
         except Exception as err:
